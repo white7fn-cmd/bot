@@ -1,15 +1,20 @@
 import asyncio
 import logging
-import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp import ClientError
 
-# ===== НАСТРОЙКИ =====
-BOT_TOKEN = "8728774025:AAEexCfweIM_wltwi_oaJIwv6gaIssmESTg"
-MY_USER_ID = 5811158994
+# === ИСПРАВЛЕНИЕ ДЛЯ WINDOWS ===
+# asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# ===== НАСТРОЙКИ (МЕНЯЕШЬ ТОЛЬКО ЭТО) =====
+BOT_TOKEN = "8728774025:AAEexCfweIM_wltwi_oaJIwv6gaIssmESTg"  # Токен от BotFather
+MY_USER_ID = 5811158994  # Твой ID от @userinfobot
+
+# Файл с прокси (создай файл proxies.txt рядом с ботом)
 PROXY_FILE = "proxies.txt"
-# ====================
+# =========================================
 
 logging.basicConfig(level=logging.INFO)
 last_user_id = None
@@ -18,12 +23,15 @@ bot = None
 
 
 def load_proxies_from_file():
+    """Загружает прокси из файла и добавляет socks5:// в начало"""
     proxies = []
     try:
         with open(PROXY_FILE, "r") as f:
             for line in f:
                 line = line.strip()
+                # Пропускаем пустые строки и комментарии
                 if line and not line.startswith("#"):
+                    # Если уже есть socks5://, оставляем как есть, иначе добавляем
                     if line.startswith("socks5://"):
                         proxies.append(line)
                     else:
@@ -32,13 +40,15 @@ def load_proxies_from_file():
         return proxies
     except FileNotFoundError:
         print(f"❌ Файл {PROXY_FILE} не найден!")
+        print("💡 Создай файл proxies.txt и напиши в нём прокси в формате ip:port (каждый с новой строки)")
         return []
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка при чтении файла: {e}")
         return []
 
 
 async def find_working_proxy(proxy_list):
+    """Перебирает прокси и возвращает первый рабочий"""
     if not proxy_list:
         return None
 
@@ -47,43 +57,51 @@ async def find_working_proxy(proxy_list):
     for i, proxy in enumerate(proxy_list, 1):
         print(f"   [{i}/{len(proxy_list)}] Пробую {proxy}")
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
-            session = AiohttpSession(proxy=proxy, timeout=timeout)
+            # Создаём временную сессию с прокси
+            session = AiohttpSession(proxy=proxy)
             test_bot = Bot(token=BOT_TOKEN, session=session)
+
+            # Пытаемся получить информацию о боте (проверка связи)
             me = await test_bot.get_me()
             await test_bot.session.close()
+
             print(f"   ✅ ПРОКСИ РАБОТАЕТ! Подключено к @{me.username}")
             return proxy
-        except Exception:
+        except (ClientError, OSError, Exception) as e:
+            print(f"   ❌ Не работает: {type(e).__name__}")
             continue
 
-    print("   ❌ НЕТ РАБОЧИХ ПРОКСИ")
+    print("   ❌ НЕТ РАБОЧИХ ПРОКСИ! Обнови файл proxies.txt новыми адресами")
     return None
 
 
 async def main():
     global bot
 
+    # Загружаем прокси из файла
     proxy_list = load_proxies_from_file()
+
+    # Находим рабочий прокси
     working_proxy = await find_working_proxy(proxy_list)
+    if not working_proxy:
+        print("❌ Не удалось подключиться. Проверь файл proxies.txt или интернет.")
+        return
 
-    if working_proxy:
-        session = AiohttpSession(proxy=working_proxy)
-        bot = Bot(token=BOT_TOKEN, session=session)
-        print(f"✅ Бот запущен через прокси: {working_proxy}")
-    else:
-        bot = Bot(token=BOT_TOKEN)
-        print("✅ Бот запущен без прокси")
+    # Создаём бота с рабочим прокси
+    session = AiohttpSession(proxy=working_proxy)
+    bot = Bot(token=BOT_TOKEN, session=session)
 
+    # Отправляем тестовое сообщение владельцу
     try:
-        await bot.send_message(MY_USER_ID, "✅ Бот успешно запущен!")
+        await bot.send_message(MY_USER_ID, "✅ Бот успешно запущен и готов к работе!")
     except:
-        print("⚠️ Напиши /start боту в Telegram")
+        print("⚠️ Не удалось отправить тестовое сообщение. Напиши /start боту, чтобы начать диалог.")
 
+    print(f"✅ Бот запущен через прокси: {working_proxy}")
     await dp.start_polling(bot)
 
 
-# ============ ХЕНДЛЕРЫ ============
+# ============ ВСЕ ХЕНДЛЕРЫ ============
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer("Здравствуйте, опишите вашу проблему и я с вами свяжусь по мере очереди")
@@ -97,17 +115,14 @@ async def forward_to_owner(message: types.Message):
     name = user.full_name or user.username or "Без имени"
     text = message.text
 
-    # Отправляем пользователю только успех (ошибки — только в лог)
     try:
         await bot.send_message(
             MY_USER_ID,
             f"✉️ От: {name} (ID: {user.id})\n💬 {text}"
         )
-        await message.answer("✅ Ждите, я вам позвоню по мере очереди")
+        await message.answer("Ждите, я вам позвоню по мере очереди")
     except Exception as e:
-        # Ошибку не показываем пользователю, только пишем в консоль
-        logging.error(f"Ошибка при отправке владельцу: {e}")
-        await message.answer("❌ Не удалось доставить сообщение. Попробуйте позже.")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("r"))
@@ -146,6 +161,8 @@ async def reply_to_id(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+
+# =======================================
 
 if __name__ == "__main__":
     asyncio.run(main())
